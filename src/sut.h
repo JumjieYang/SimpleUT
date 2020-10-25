@@ -2,11 +2,12 @@
 #define __SUT_H__
 #include <stdbool.h>
 #include <ucontext.h>
-typedef struct __threaddesc {
-    int threadId;
+typedef struct thread {
+    char *threadstack;
     void *threadfunc;
     ucontext_t threadcontext;
-} threaddesc;
+
+} thread;
 
 typedef void (*sut_task_f)();
 
