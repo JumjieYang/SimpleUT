@@ -2,12 +2,21 @@
 #define __SUT_H__
 #include <stdbool.h>
 #include <ucontext.h>
-typedef struct thread {
-    char *threadstack;
-    void *threadfunc;
-    ucontext_t threadcontext;
 
-} thread;
+typedef enum option{
+    OPEN, READ, WRITE
+} option;
+typedef struct thread_t {
+    ucontext_t context;
+    int socketfd;
+} thread_t;
+
+typedef struct request_t {
+    thread_t thread;
+    option opt;
+    int port,size;
+    char *dest, *buf;
+} request_t;
 
 typedef void (*sut_task_f)();
 
