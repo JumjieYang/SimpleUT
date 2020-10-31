@@ -5,6 +5,7 @@
 void hello1() {
     int i;
     char *str;
+    sut_open("0.0.0.0", 1992);
     for (i = 0; i < 10; i++) {
 	str = sut_read();
 	if (strlen(str) != 0)
@@ -13,7 +14,7 @@ void hello1() {
 	    printf("ERROR!, empty message received \n");
 	sut_yield();
     }
-    sut_exit();
+    sut_close();
 }
 
 void hello2() {

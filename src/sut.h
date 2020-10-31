@@ -4,15 +4,17 @@
 #include <ucontext.h>
 
 typedef enum option{
-    OPEN, READ, WRITE
+    OPEN=1, READ=2, WRITE=3
 } option;
 typedef struct thread_t {
     ucontext_t context;
     int socketfd;
+    int isConnected;
+    char *buf;
 } thread_t;
 
 typedef struct request_t {
-    thread_t thread;
+    thread_t *thread;
     option opt;
     int port,size;
     char *dest, *buf;

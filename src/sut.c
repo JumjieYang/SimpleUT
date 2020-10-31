@@ -12,95 +12,118 @@
 struct queue c_queue, i_queue;
 pthread_t CEXEC;
 pthread_t IEXEC;
-static ucontext_t c_sche, i_sche;
-thread_t *current;
-int sockfd;
-int *isShutdown;
-pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+static ucontext_t c_sche, i_sche; 
+int size_c, size_i; // size of the c_queue, and i_queue.
+thread_t *cur_t; // indicate the current running thread for c_scheduler.
+request_t *cur_r; // indicate the current running thread for i_scheduler.
+int isShutdown; // indicate if sut_shutdown() is called, 0 for not, 1 for called.
+pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER; // Lock
 
 
 void *c_scheduler(){
     struct queue_entry *entry;
-    getcontext(&c_sche);
     while(true){
-        entry = queue_peek_front(&c_queue);
-        if (entry == NULL && isShutdown && NULL ==queue_peek_front(&i_queue))
-            return;
-        else if (entry != NULL){
-            current = (thread_t *)entry ->data;
-            pthread_mutex_lock(&m);
-            queue_pop_head(&c_queue);
-            pthread_mutex_unlock(&m);
-            swapcontext(&c_sche,&current->context);
-        }
-        else{
+        // if there's no task left to run in both queue, and sut_shutdown() is called, exit.
+        while (!size_c){
+            if (!size_i && !cur_r && isShutdown)
+                return;
             usleep(10);
         }
+        // use mutex here to ensure only one is modifying the queue at any given time.
+        pthread_mutex_lock(&m);
+        entry = queue_pop_head(&c_queue);
+        size_c --;
+        cur_t = entry -> data;
+        pthread_mutex_unlock(&m);
+
+        // run the scheduled task.
+        swapcontext(&c_sche, &(cur_t -> context));
     }
 }
 
 void *i_scheduler() {
     struct queue_entry *entry;
-    request_t *temp = (request_t *)malloc(sizeof(request_t));
-    thread_t *temp_thread;
-    char msg[1024];
     ssize_t ret;
-    getcontext(&i_sche);
+    char msg[1024];
     while(true){
-        entry = queue_peek_front(&i_queue);
-        if (entry == NULL && isShutdown && NULL ==queue_peek_front(&c_queue))
-            return;
-        else if (entry != NULL){
-            temp = (request_t *)entry ->data;
-            pthread_mutex_lock(&m);
-            queue_pop_head(&c_queue);
-            pthread_mutex_unlock(&m);
-            switch (temp->opt)
-            {
-            case OPEN:
-                temp_thread = &temp->thread;
-                connect_to_server(temp->dest,temp->port,&temp_thread->socketfd);
-                struct queue_entry *node = queue_new_node(temp_thread);
-                pthread_mutex_lock(&m);
-                queue_insert_tail(&c_queue,node);
-                pthread_mutex_unlock(&m);
-                break;
-            case READ:
-                memset(temp->buf, 0, 1024);
-                ret = recv_message(temp_thread->socketfd,temp->buf,1024);
-                if (ret< 0)
-                    printf("receive message error\n");
-                else if (ret == 0)
-                    printf("This task isn't connected to any server");
-                else{
-                    pthread_mutex_lock(&m);
-                    queue_insert_tail(&c_queue,queue_new_node(temp_thread));
-                    pthread_mutex_unlock(&m);
-                }
-                break;
-            case WRITE:
-                ret = send_message(temp_thread ->socketfd, temp->buf, strlen(msg));
-                if (ret < 0)
-                    printf("Error!");
-                break;
-            default:
-                break;
-            }
-        }
-        else{
+        // Similar to c_sche, used to check if the program need to stop
+        while (!size_i)
+        {
+            if (!size_c && !cur_t && isShutdown)
+                return;
             usleep(10);
         }
+        pthread_mutex_lock(&m);
+        entry = queue_pop_head(&i_queue);
+        size_i--;
+        cur_r = entry->data;
+        pthread_mutex_unlock(&m);
+        // opt is a enum indicate the type of the option, declared in sut.h
+        switch (cur_r -> opt){
+		case OPEN:
+			ret = connect_to_server(cur_r->dest, cur_r->port, &(cur_r->thread->socketfd));
+            if (ret < 0){
+                printf("ERROR! Fail to connect to server\n");
+            }
+            else
+			    cur_r->thread->isConnected = true;
+			pthread_mutex_lock(&m);
+			queue_insert_tail(&c_queue, queue_new_node(cur_r->thread));
+			size_c ++;
+			pthread_mutex_unlock(&m);
+			break;
+		case READ:
+        // make msg ready for getting the info.
+			memset(msg, 0, 1024);
+			if (cur_r->thread->isConnected == false)
+			{
+				printf("FATAL: This task is not connected to any server!\n");
+			}
+			else
+			{
+				ret = recv_message(cur_r->thread->socketfd, msg, 1024);
+                if (ret <0)
+                {
+                    printf("Error! Fail to receive messages");
+                }
+                else if (ret == 0)
+                {
+                    printf("Error! Current socket connection has been closed");
+                }
+                else
+                    cur_r->thread->buf = msg;
+			}
+			pthread_mutex_lock(&m);
+			queue_insert_tail(&c_queue, queue_new_node(cur_r->thread));
+			size_c ++;
+			pthread_mutex_unlock(&m);
+            break;
+        case WRITE:
+			if (cur_r->thread->isConnected == false)
+			{
+				printf("Error !!! This task has not initialized with sut_init() call \n");
+			}
+			else
+			{
+            ret = send_message(cur_r -> thread ->socketfd, cur_r->buf, cur_r->size);
+            if (ret <0){
+                printf("Error in send messages");
+            }
+            }
+			break;
+		default:
+			break;
+		}
     }
 }
-void sut_init(){
-    isShutdown = 0;
+
+void sut_init() {
     c_queue = queue_create();
     queue_init(&c_queue);
     i_queue = queue_create();
     queue_init(&i_queue);
-    pthread_create(&CEXEC, NULL, c_scheduler,&m);
-    pthread_create(&IEXEC, NULL, i_scheduler,&m);
-
+    pthread_create(&CEXEC, NULL, c_scheduler,0);
+    pthread_create(&IEXEC, NULL, i_scheduler,0);
 }
 
 bool sut_create(sut_task_f fn){
@@ -119,16 +142,18 @@ bool sut_create(sut_task_f fn){
     struct queue_entry *node = queue_new_node(t);
     pthread_mutex_lock(&m);
     queue_insert_tail(&c_queue, node);
+    size_c ++;
     pthread_mutex_unlock(&m);
     return true; 
 }   
 
 void sut_yield(){
-    struct queue_entry *node = queue_new_node(current);
+    struct queue_entry *node = queue_new_node(cur_t);
     pthread_mutex_lock(&m);
     queue_insert_tail(&c_queue, node);
+    size_c ++;
     pthread_mutex_unlock(&m);
-    swapcontext(&(current->context), &c_sche);
+    swapcontext(&(cur_t->context), &c_sche);
 }
 
 void sut_exit(){
@@ -137,7 +162,7 @@ void sut_exit(){
 
 void sut_open(char *dest, int port){
     request_t *request = (request_t *)malloc(sizeof(request_t));
-    request -> thread = *current;
+    request -> thread = cur_t;
     request-> dest = dest;
     request-> port = port;
     request->opt = OPEN;
@@ -145,42 +170,45 @@ void sut_open(char *dest, int port){
     struct queue_entry *node = queue_new_node(request);
     pthread_mutex_lock(&m);
     queue_insert_tail(&i_queue,node);
+    size_i ++;
     pthread_mutex_unlock(&m);
-    swapcontext(&(current->context), &c_sche);
+    swapcontext(&(cur_t->context), &c_sche);
 }
 
 void sut_write(char *buf, int size){
     request_t *request = (request_t *)malloc(sizeof(request_t));
-    request ->thread = *current;
+    request ->thread = cur_t;
     request->size = size;
     request->buf = buf;
     request->opt = WRITE;
     struct queue_entry *node = queue_new_node(request);
     pthread_mutex_lock(&m);
     queue_insert_tail(&i_queue, node);
+    size_i ++;
     pthread_mutex_unlock(&m);
 }
 
 void sut_close(){
-    if(0 != (errno = shutdown(current->socketfd,2)))
+    if(0 != (errno = shutdown(cur_t->socketfd,2)))
         perror("socket shutdown failed");
+    cur_t -> isConnected = false;
 }
 
 char *sut_read(){
     request_t *request = (request_t *)malloc(sizeof(request));
-    request ->thread = *current;
+    request ->thread = cur_t;
     request -> opt = READ;
-
     struct queue_entry *node = queue_new_node(request);
     pthread_mutex_lock(&m);
     queue_insert_tail(&i_queue, node);
+    size_i ++;
     pthread_mutex_unlock(&m);
-    swapcontext(&(current->context), &c_sche);
-    return request->buf;
+    swapcontext(&(cur_t->context), &c_sche);
+    return cur_t -> buf;
 }
 
 void sut_shutdown(){
-    isShutdown = (int *)1;
+    isShutdown =1;
     if (0 != (errno = pthread_join(CEXEC,NULL)) && 0 != (errno = pthread_join(IEXEC,NULL)))
     {
         perror("pthread_join() failed");
