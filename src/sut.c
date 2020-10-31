@@ -20,7 +20,7 @@ int isShutdown; // indicate if sut_shutdown() is called, 0 for not, 1 for called
 pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER; // Lock
 
 
-void *c_scheduler(){
+void c_scheduler(){
     struct queue_entry *entry;
     while(true){
         // if there's no task left to run in both queue, and sut_shutdown() is called, exit.
@@ -41,7 +41,7 @@ void *c_scheduler(){
     }
 }
 
-void *i_scheduler() {
+void i_scheduler() {
     struct queue_entry *entry;
     ssize_t ret;
     char msg[1024];
@@ -122,8 +122,9 @@ void sut_init() {
     queue_init(&c_queue);
     i_queue = queue_create();
     queue_init(&i_queue);
-    pthread_create(&CEXEC, NULL, c_scheduler,0);
-    pthread_create(&IEXEC, NULL, i_scheduler,0);
+    // use (void *) to avoid warning message
+    pthread_create(&CEXEC, NULL, (void *)c_scheduler,0);
+    pthread_create(&IEXEC, NULL, (void *)i_scheduler,0);
 }
 
 bool sut_create(sut_task_f fn){
